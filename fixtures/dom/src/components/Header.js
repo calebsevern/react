@@ -38,26 +38,31 @@ class Header extends React.Component {
           React Sandbox (v{React.version})
         </span>
 
-        <div className="header-controls">
-          <label htmlFor="example">
-            <span className="sr-only">Select an example</span>
-            <select value={window.location.pathname} onChange={this.handleFixtureChange}>
-              <option value="/">Select a Fixture</option>
-              <option value="/range-inputs">Range Inputs</option>
-              <option value="/text-inputs">Text Inputs</option>
-              <option value="/number-inputs">Number Input</option>
-              <option value="/password-inputs">Password Input</option>
-              <option value="/selects">Selects</option>
-              <option value="/textareas">Textareas</option>
-              <option value="/input-change-events">Input change events</option>
-              <option value="/buttons">Buttons</option>
-            </select>
-          </label>
-          <label htmlFor="react_version">
-            <span className="sr-only">Select a version to test</span>
-            <select
-              value={this.state.version}
-              onChange={this.handleVersionChange}>
+          <div className="header-controls">
+            <label htmlFor="example">
+              <span className="sr-only">Select an example</span>
+              <select
+                value={window.location.pathname}
+                onChange={this.handleFixtureChange}>
+                <option value="/">Select a Fixture</option>
+                <option value="/range-inputs">Range Inputs</option>
+                <option value="/text-inputs">Text Inputs</option>
+                <option value="/number-inputs">Number Input</option>
+                <option value="/password-inputs">Password Input</option>
+                <option value="/selects">Selects</option>
+                <option value="/textareas">Textareas</option>
+                <option value="/input-change-events">
+                  Input change events
+                </option>
+                <option value="/buttons">Buttons</option>
+                <option value="/error-handling">Error Handling</option>
+              </select>
+            </label>
+            <label htmlFor="react_version">
+              <span className="sr-only">Select a version to test</span>
+              <select
+                value={this.state.version}
+                onChange={this.handleVersionChange}>
                 {this.state.versions.map(version => (
                   <option key={version} value={version}>{version}</option>
                 ))}

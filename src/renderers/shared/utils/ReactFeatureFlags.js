@@ -20,6 +20,8 @@ var ReactFeatureFlags = {
   prepareNewChildrenBeforeUnmountInStack: true,
   disableNewFiberFeatures: false,
   enableAsyncSubtreeAPI: false,
+  // We set this to true when running unit tests
+  forceInvokeGuardedCallbackDev: false,
 };
 
 module.exports = ReactFeatureFlags;

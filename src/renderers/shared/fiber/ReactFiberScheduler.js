@@ -21,7 +21,7 @@ import type {HydrationContext} from 'ReactFiberHydrationContext';
 export type CapturedError = {
   componentName: ?string,
   componentStack: string,
-  error: Error,
+  error: mixed,
   errorBoundary: ?Object,
   errorBoundaryFound: boolean,
   errorBoundaryName: string | null,
@@ -38,7 +38,11 @@ var {
   getStackAddendumByWorkInProgressFiber,
 } = require('ReactFiberComponentTreeHook');
 var {logCapturedError} = require('ReactFiberErrorLogger');
-var {invokeGuardedCallback} = require('ReactErrorUtils');
+var {
+  invokeGuardedCallback,
+  hasCaughtError,
+  clearCaughtError,
+} = require('ReactErrorUtils');
 
 var ReactFiberBeginWork = require('ReactFiberBeginWork');
 var ReactFiberCompleteWork = require('ReactFiberCompleteWork');
@@ -225,8 +229,8 @@ module.exports = function<T, P, I, TI, PI, C, CX, PL>(
   let failedBoundaries: Set<Fiber> | null = null;
   // Error boundaries that captured an error during the current commit.
   let commitPhaseBoundaries: Set<Fiber> | null = null;
-  let firstUncaughtError: Error | null = null;
-  let fatalError: Error | null = null;
+  let firstUncaughtError: mixed | null = null;
+  let didFatal: boolean = false;
 
   let isCommitting: boolean = false;
   let isUnmounting: boolean = false;
@@ -472,22 +476,23 @@ module.exports = function<T, P, I, TI, PI, C, CX, PL>(
       startCommitHostEffectsTimer();
     }
     while (nextEffect !== null) {
-      let error = null;
+      let didError = false;
+      let error;
       if (__DEV__) {
-        error = invokeGuardedCallback(
-          null,
-          commitAllHostEffects,
-          null,
-          finishedWork,
-        );
+        invokeGuardedCallback(null, commitAllHostEffects, null);
+        if (hasCaughtError()) {
+          didError = true;
+          error = clearCaughtError();
+        }
       } else {
         try {
           commitAllHostEffects(finishedWork);
         } catch (e) {
+          didError = true;
           error = e;
         }
       }
-      if (error !== null) {
+      if (didError) {
         invariant(
           nextEffect !== null,
           'Should have next effect. This error is likely caused by a bug ' +
@@ -521,22 +526,23 @@ module.exports = function<T, P, I, TI, PI, C, CX, PL>(
       startCommitLifeCyclesTimer();
     }
     while (nextEffect !== null) {
-      let error = null;
+      let didError = false;
+      let error;
       if (__DEV__) {
-        error = invokeGuardedCallback(
-          null,
-          commitAllLifeCycles,
-          null,
-          finishedWork,
-        );
+        invokeGuardedCallback(null, commitAllLifeCycles, null);
+        if (hasCaughtError()) {
+          didError = true;
+          error = clearCaughtError();
+        }
       } else {
         try {
           commitAllLifeCycles(finishedWork);
         } catch (e) {
+          didError = true;
           error = e;
         }
       }
-      if (error !== null) {
+      if (didError) {
         invariant(
           nextEffect !== null,
           'Should have next effect. This error is likely caused by a bug ' +
@@ -883,10 +889,48 @@ module.exports = function<T, P, I, TI, PI, C, CX, PL>(
     isPerformingWork = true;
     const isPerformingDeferredWork = !!deadline;
 
-    // This outer loop exists so that we can restart the work loop after
-    // catching an error. It also lets us flush Task work at the end of a
-    // deferred batch.
-    while (priorityLevel !== NoWork && !fatalError) {
+    nestedUpdateCount = 0;
+
+    // The priority context changes during the render phase. We'll need to
+    // reset it at the end.
+    const previousPriorityContext = priorityContext;
+
+    let didError = false;
+    let error = null;
+    if (__DEV__) {
+      invokeGuardedCallback(null, workLoop, null, minPriorityLevel, deadline);
+      if (hasCaughtError()) {
+        didError = true;
+        error = clearCaughtError();
+      }
+    } else {
+      try {
+        workLoop(minPriorityLevel, deadline);
+      } catch (e) {
+        didError = true;
+        error = e;
+      }
+    }
+
+    // An error was thrown during the render phase.
+    while (didError) {
+      if (didFatal) {
+        // This was a fatal error. Don't attempt to recover from it.
+        firstUncaughtError = error;
+        break;
+      }
+
+      const failedWork = nextUnitOfWork;
+      if (failedWork === null) {
+        // An error was thrown but there's no current unit of work. This can
+        // happen during the commit phase if there's a bug in the renderer.
+        didFatal = true;
+        continue;
+      }
+
+      // "Capture" the error by finding the nearest boundary. If there is no
+      // error boundary, we use the root.
+      const boundary = captureError(failedWork, error);
       invariant(
         deadline !== null || priorityLevel < HighPriority,
         'Cannot perform deferred work without a deadline. This error is ' +
@@ -899,68 +943,33 @@ module.exports = function<T, P, I, TI, PI, C, CX, PL>(
         commitAllWork(pendingCommit);
       }
 
-      // Nothing in performWork should be allowed to throw. All unsafe
-      // operations must happen within workLoop, which is extracted to a
-      // separate function so that it can be optimized by the JS engine.
-      priorityContextBeforeReconciliation = priorityContext;
-      let error = null;
+      didError = false;
+      error = null;
       if (__DEV__) {
-        error = invokeGuardedCallback(
+        invokeGuardedCallback(
           null,
           workLoop,
           null,
           priorityLevel,
           deadline,
         );
+        if (hasCaughtError()) {
+          didError = true;
+          error = clearCaughtError();
+          continue;
+        }
       } else {
         try {
           workLoop(priorityLevel, deadline);
         } catch (e) {
+          didError = true;
           error = e;
-        }
-      }
-      // Reset the priority context to its value before reconcilation.
-      priorityContext = priorityContextBeforeReconciliation;
-
-      if (error !== null) {
-        // We caught an error during either the begin or complete phases.
-        const failedWork = nextUnitOfWork;
-
-        if (failedWork !== null) {
-          // "Capture" the error by finding the nearest boundary. If there is no
-          // error boundary, the nearest host container acts as one. If
-          // captureError returns null, the error was intentionally ignored.
-          const maybeBoundary = captureError(failedWork, error);
-          if (maybeBoundary !== null) {
-            const boundary = maybeBoundary;
-
-            // Complete the boundary as if it rendered null. This will unmount
-            // the failed tree.
-            beginFailedWork(boundary.alternate, boundary, priorityLevel);
-
-            // The next unit of work is now the boundary that captured the error.
-            // Conceptually, we're unwinding the stack. We need to unwind the
-            // context stack, too, from the failed work to the boundary that
-            // captured the error.
-            // TODO: If we set the memoized props in beginWork instead of
-            // completeWork, rather than unwind the stack, we can just restart
-            // from the root. Can't do that until then because without memoized
-            // props, the nodes higher up in the tree will rerender unnecessarily.
-            unwindContexts(failedWork, boundary);
-            nextUnitOfWork = completeUnitOfWork(boundary);
-          }
-          // Continue performing work
           continue;
-        } else if (fatalError === null) {
-          // There is no current unit of work. This is a worst-case scenario
-          // and should only be possible if there's a bug in the renderer, e.g.
-          // inside resetAfterCommit.
-          fatalError = error;
         }
       }
-
-      // Stop performing work
-      priorityLevel = NoWork;
+      // We're finished working. Exit the error loop.
+      break;
+    }
 
       // If have we more work, and we're in a deferred batch, check to see
       // if the deadline has expired.
@@ -1019,7 +1028,7 @@ module.exports = function<T, P, I, TI, PI, C, CX, PL>(
   }
 
   // Returns the boundary that captured the error, or null if the error is ignored
-  function captureError(failedWork: Fiber, error: Error): Fiber | null {
+  function captureError(failedWork: Fiber, error: mixed): Fiber | null {
     // It is no longer valid because we exited the user code.
     ReactCurrentOwner.current = null;
     if (__DEV__) {
