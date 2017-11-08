@@ -887,9 +887,7 @@ module.exports = function<T, P, I, TI, PI, C, CX, PL>(
         'by a bug in React. Please file an issue.',
     );
     isPerformingWork = true;
-    const isPerformingDeferredWork = !!deadline;
-
-    nestedUpdateCount = 0;
+    // const isPerformingDeferredWork = !!deadline;
 
     // The priority context changes during the render phase. We'll need to
     // reset it at the end.
@@ -898,14 +896,14 @@ module.exports = function<T, P, I, TI, PI, C, CX, PL>(
     let didError = false;
     let error = null;
     if (__DEV__) {
-      invokeGuardedCallback(null, workLoop, null, minPriorityLevel, deadline);
+      invokeGuardedCallback(null, workLoop, null, priorityLevel, deadline);
       if (hasCaughtError()) {
         didError = true;
         error = clearCaughtError();
       }
     } else {
       try {
-        workLoop(minPriorityLevel, deadline);
+        workLoop(priorityLevel, deadline);
       } catch (e) {
         didError = true;
         error = e;
@@ -931,11 +929,14 @@ module.exports = function<T, P, I, TI, PI, C, CX, PL>(
       // "Capture" the error by finding the nearest boundary. If there is no
       // error boundary, we use the root.
       const boundary = captureError(failedWork, error);
-      invariant(
-        deadline !== null || priorityLevel < HighPriority,
-        'Cannot perform deferred work without a deadline. This error is ' +
-          'likely caused by a bug in React. Please file an issue.',
-      );
+      //invariant(
+      //  boundary !== null,
+      //  'Should have found an error boundary. This error is likely ' +
+      //    'caused by a bug in React. Please file an issue.',
+      //);
+
+      // We're not using error boundaries
+      invariant(boundary !== null, 'Error in render cycle, halting scheduled fibers/tasks');
 
       // Before starting any work, check to see if there are any pending
       // commits from the previous frame.
@@ -945,6 +946,7 @@ module.exports = function<T, P, I, TI, PI, C, CX, PL>(
 
       didError = false;
       error = null;
+      /*
       if (__DEV__) {
         invokeGuardedCallback(
           null,
@@ -954,66 +956,45 @@ module.exports = function<T, P, I, TI, PI, C, CX, PL>(
           deadline,
         );
         if (hasCaughtError()) {
+          console.log("errored again");
           didError = true;
+          didFatal = true;
           error = clearCaughtError();
           continue;
         }
       } else {
+      */
         try {
           workLoop(priorityLevel, deadline);
         } catch (e) {
           didError = true;
-          error = e;
+          // error = e;
           continue;
         }
-      }
+      //}
       // We're finished working. Exit the error loop.
       break;
     }
 
-      // If have we more work, and we're in a deferred batch, check to see
-      // if the deadline has expired.
-      if (
-        nextPriorityLevel !== NoWork &&
-        isPerformingDeferredWork &&
-        !deadlineHasExpired
-      ) {
-        // We have more time to do work.
-        priorityLevel = nextPriorityLevel;
-        continue;
-      }
+    // Reset the priority context to its previous value.
+    priorityContext = previousPriorityContext;
 
-      // There might be work left. Depending on the priority, we should
-      // either perform it now or schedule a callback to perform it later.
-      switch (nextPriorityLevel) {
-        case SynchronousPriority:
-        case TaskPriority:
-          // Perform work immediately by switching the priority level
-          // and continuing the loop.
-          priorityLevel = nextPriorityLevel;
-          break;
-        case AnimationPriority:
-          scheduleAnimationCallback(performAnimationWork);
-          // Even though the next unit of work has animation priority, there
-          // may still be deferred work left over as well. I think this is
-          // only important for unit tests. In a real app, a deferred callback
-          // would be scheduled during the next animation frame.
-          scheduleDeferredCallback(performDeferredWork);
-          break;
-        case HighPriority:
-        case LowPriority:
-        case OffscreenPriority:
-          scheduleDeferredCallback(performDeferredWork);
-          break;
-      }
+    // If we're inside a callback, set this to false, since we just flushed it.
+    if (deadline !== null) {
+      isDeferredCallbackScheduled = false;
+    }
+    // If there's remaining async work, make sure we schedule another callback.
+    if (nextPriorityLevel > TaskPriority && !isDeferredCallbackScheduled) {
+      scheduleDeferredCallback(performDeferredWork);
+      isDeferredCallbackScheduled = true;
     }
 
-    const errorToThrow = fatalError || firstUncaughtError;
+    const errorToThrow = firstUncaughtError;
 
     // We're done performing work. Time to clean up.
     isPerformingWork = false;
     deadlineHasExpired = false;
-    fatalError = null;
+    didFatal = false;
     firstUncaughtError = null;
     capturedErrors = null;
     failedBoundaries = null;
@@ -1056,7 +1037,7 @@ module.exports = function<T, P, I, TI, PI, C, CX, PL>(
         // If this root already failed, there must have been an error when
         // attempting to unmount it. This is a worst-case scenario and
         // should only be possible if there's a bug in the renderer.
-        fatalError = error;
+        didFatal = true;
       }
     } else {
       let node = failedWork.return;
